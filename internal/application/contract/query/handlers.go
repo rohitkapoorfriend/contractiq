@@ -5,14 +5,24 @@ import (
 
 	"github.com/contractiq/contractiq/internal/application/contract/dto"
 	"github.com/contractiq/contractiq/internal/domain/contract"
+	"github.com/contractiq/contractiq/pkg/apperror"
 )
 
-// Handler processes contract queries (read operations).
+// PagedResult is the query-layer paginated result for contracts.
+type PagedResult struct {
+	Items      []*dto.ContractResponse
+	TotalCount int
+	Page       int
+	PageSize   int
+	TotalPages int
+}
+
+// Handler processes contract read queries.
 type Handler struct {
 	repo contract.Repository
 }
 
-// NewHandler creates a new query handler.
+// NewHandler creates a new contract query handler.
 func NewHandler(repo contract.Repository) *Handler {
 	return &Handler{repo: repo}
 }
@@ -26,21 +36,11 @@ func (h *Handler) GetByID(ctx context.Context, id string) (*dto.ContractResponse
 	return toResponse(c), nil
 }
 
-// List retrieves contracts matching filter criteria.
-func (h *Handler) List(ctx context.Context, ownerID string, req dto.ListContractsRequest) (*PagedResponse, error) {
+// List retrieves a paginated, filtered list of contracts for a user.
+func (h *Handler) List(ctx context.Context, ownerID string, req dto.ListContractsRequest) (*PagedResult, error) {
 	filter := contract.DefaultFilter()
 	filter.OwnerID = &ownerID
 
-	if req.Status != "" {
-		status := contract.Status(req.Status)
-		filter.Status = &status
-	}
-	if req.PartyID != "" {
-		filter.PartyID = &req.PartyID
-	}
-	if req.Search != "" {
-		filter.Search = &req.Search
-	}
 	if req.Page > 0 {
 		filter.Page = req.Page
 	}
@@ -48,32 +48,39 @@ func (h *Handler) List(ctx context.Context, ownerID string, req dto.ListContract
 		filter.PageSize = req.PageSize
 	}
 
+	if req.Status != "" {
+		s := contract.Status(req.Status)
+		if !s.IsValid() {
+			return nil, apperror.NewValidation("invalid status filter: " + req.Status)
+		}
+		filter.Status = &s
+	}
+
+	if req.PartyID != "" {
+		filter.PartyID = &req.PartyID
+	}
+
+	if req.Search != "" {
+		filter.Search = &req.Search
+	}
+
 	result, err := h.repo.FindAll(ctx, filter)
 	if err != nil {
 		return nil, err
 	}
 
-	items := make([]dto.ContractResponse, 0, len(result.Items))
+	items := make([]*dto.ContractResponse, 0, len(result.Items))
 	for _, c := range result.Items {
-		items = append(items, *toResponse(c))
+		items = append(items, toResponse(c))
 	}
 
-	return &PagedResponse{
+	return &PagedResult{
 		Items:      items,
 		TotalCount: result.TotalCount,
 		Page:       result.Page,
 		PageSize:   result.PageSize,
 		TotalPages: result.TotalPages(),
 	}, nil
-}
-
-// PagedResponse wraps a page of contract responses with metadata.
-type PagedResponse struct {
-	Items      []dto.ContractResponse `json:"items"`
-	TotalCount int                    `json:"total_count"`
-	Page       int                    `json:"page"`
-	PageSize   int                    `json:"page_size"`
-	TotalPages int                    `json:"total_pages"`
 }
 
 func toResponse(c *contract.Contract) *dto.ContractResponse {
@@ -90,7 +97,7 @@ func toResponse(c *contract.Contract) *dto.ContractResponse {
 		ID:          c.ID(),
 		Title:       c.Title(),
 		Description: c.Description(),
-		Status:      c.Status().String(),
+		Status:      string(c.Status()),
 		Value: dto.MoneyDTO{
 			AmountCents: c.Value().AmountCents,
 			Currency:    c.Value().Currency,
